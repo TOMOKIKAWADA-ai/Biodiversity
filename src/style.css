@@ -1,0 +1,185 @@
+:root {
+  --panel-bg: rgba(252, 253, 250, 0.62);
+  --panel-border: rgba(60, 70, 55, 0.12);
+  --text-main: #2e3a2f;
+  --text-dim: rgba(58, 72, 56, 0.62);
+  --accent: #5d8a4a;
+  --font: "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Noto Sans JP", system-ui, sans-serif;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  font-family: var(--font);
+  background: #d7e2d8;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#app { position: fixed; inset: 0; }
+
+#scene {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+/* ---- 指標パネル ---- */
+#stats-panel {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 4px 14px;
+  padding: 7px 16px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: var(--text-main);
+  box-shadow: 0 2px 14px rgba(40, 60, 40, 0.08);
+  pointer-events: none;
+  user-select: none;
+  max-width: calc(100% - 16px);
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 40px;
+}
+
+.stat-label {
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.stat-value {
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.stat-value .risk { font-size: 10px; font-weight: 600; margin-left: 2px; }
+.risk.low { color: #5d8a4a; }
+.risk.mid { color: #b08a3a; }
+.risk.high { color: #b05545; }
+
+.meter {
+  width: 50px;
+  height: 3px;
+  margin-top: 3px;
+  border-radius: 2px;
+  background: rgba(60, 70, 55, 0.15);
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #a4bc7e, var(--accent));
+  transition: width 0.6s ease;
+}
+
+/* ---- 操作パネル ---- */
+#controls {
+  position: absolute;
+  bottom: max(14px, env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 16px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 2px 14px rgba(40, 60, 40, 0.08);
+  max-width: calc(100% - 12px);
+}
+
+#controls button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  min-width: 54px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 11px;
+  background: rgba(60, 80, 55, 0.05);
+  color: var(--text-main);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.18s ease, transform 0.12s ease;
+}
+
+#controls button:hover { background: rgba(60, 80, 55, 0.12); }
+#controls button:active { transform: scale(0.94); }
+#controls button.active { background: rgba(93, 138, 74, 0.22); }
+
+#controls .icon { font-size: 16px; line-height: 1.15; }
+#controls .label { font-size: 10px; color: var(--text-dim); }
+
+/* ---- トースト ---- */
+#toast {
+  position: absolute;
+  bottom: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 16px;
+  border-radius: 999px;
+  background: rgba(250, 252, 248, 0.82);
+  border: 1px solid var(--panel-border);
+  color: var(--text-main);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  opacity: 0;
+  transition: opacity 0.45s ease;
+  pointer-events: none;
+  white-space: nowrap;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 2px 10px rgba(40, 60, 40, 0.1);
+  max-width: calc(100% - 24px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#toast.show { opacity: 1; }
+
+/* ---- モバイル ---- */
+@media (max-width: 640px) {
+  #stats-panel {
+    gap: 2px 9px;
+    padding: 5px 10px;
+    border-radius: 12px;
+  }
+  .stat { min-width: 34px; }
+  .stat-label { font-size: 9px; }
+  .stat-value { font-size: 12px; }
+  .meter { width: 38px; }
+
+  #controls { gap: 4px; padding: 5px; }
+  #controls button { min-width: 44px; padding: 5px 5px; }
+  #controls .icon { font-size: 14px; }
+  #controls .label { font-size: 9px; }
+  #toast { bottom: 104px; font-size: 11px; }
+}

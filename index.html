@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>小さな流域 — 生物多様性ジオラマ</title>
+  <link rel="stylesheet" href="./src/style.css" />
+</head>
+<body>
+  <div id="app">
+    <canvas id="scene"></canvas>
+
+    <header id="stats-panel" aria-label="観察指標">
+      <div class="stat">
+        <span class="stat-label">季節</span>
+        <span class="stat-value" id="val-season">春</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">時間</span>
+        <span class="stat-value" id="val-time">0日</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">植物</span>
+        <span class="stat-value" id="val-plants">0</span>
+      </div>
+      <div class="stat stat-diversity">
+        <span class="stat-label">多様性</span>
+        <span class="stat-value" id="val-diversity">0</span>
+        <div class="meter"><div class="meter-fill" id="meter-diversity"></div></div>
+      </div>
+      <div class="stat">
+        <span class="stat-label">水辺</span>
+        <span class="stat-value" id="val-water">0</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">虫</span>
+        <span class="stat-value" id="val-insects">0</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">鳥</span>
+        <span class="stat-value" id="val-birds">0</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">魚</span>
+        <span class="stat-value" id="val-fish">0</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">外来種</span>
+        <span class="stat-value" id="val-vine">0%</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">希少種</span>
+        <span class="stat-value" id="val-rare">—</span>
+      </div>
+    </header>
+
+    <div id="toast" aria-live="polite"></div>
+
+    <nav id="controls" aria-label="操作">
+      <button id="btn-pause" title="停止 / 再開"><span class="icon">⏸</span><span class="label">停止</span></button>
+      <button id="btn-rain" title="雨を降らせる"><span class="icon">🌧</span><span class="label">雨</span></button>
+      <button id="btn-flood" title="川を氾濫させる(自然の攪乱の再現)"><span class="icon">🌊</span><span class="label">氾濫</span></button>
+      <button id="btn-plant" title="少し植物を植える"><span class="icon">🌱</span><span class="label">植える</span></button>
+      <button id="btn-cull" title="アレチウリを駆除する"><span class="icon">🧹</span><span class="label">駆除</span></button>
+      <button id="btn-protect" title="希少種の周りの環境を保護する"><span class="icon">🛡</span><span class="label">保護</span></button>
+      <button id="btn-view" title="視点を切り替える"><span class="icon">👁</span><span class="label">観察</span></button>
+      <button id="btn-reset" title="リセット"><span class="icon">↺</span><span class="label">リセット</span></button>
+    </nav>
+  </div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
