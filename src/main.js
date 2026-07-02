@@ -308,6 +308,57 @@ terrain.receiveShadow = true;
 terrain.castShadow = false;
 scene.add(terrain);
 
+// ---------------- 円状カーソル(範囲限定の操作) ----------------
+// 駆除・植栽をこのリングの内側だけに効かせる。半径はワールド単位。
+// 局所パッチ。調整はこの定数だけ変えれば見た目も効果範囲も同時に変わる。
+const CURSOR_RADIUS = 6;                 // ワールド単位の作用半径(= リングの見た目の半径)
+
+// 地面に寝かせる薄いリング(RingGeometry を水平に)。控えめな半透明。
+const cursorGeo = new THREE.RingGeometry(CURSOR_RADIUS - 0.35, CURSOR_RADIUS, 64);
+cursorGeo.rotateX(-Math.PI / 2);
+const cursorMat = new THREE.MeshBasicMaterial({
+  color: 0xdff0e2, transparent: true, opacity: 0.5,
+  depthWrite: false, side: THREE.DoubleSide,
+});
+const cursorRing = new THREE.Mesh(cursorGeo, cursorMat);
+cursorRing.renderOrder = 5;
+scene.add(cursorRing);
+
+// 最後の有効なカーソル位置(常に有効。初期はワールド中央の地表)。
+const cursorPos = new THREE.Vector3(0, terrainHeight(0, 0), 0);
+cursorRing.position.copy(cursorPos);
+cursorRing.position.y += 0.05;
+
+// レイキャスト(canvas ポインタ → NDC → terrain との交点)
+const cursorRaycaster = new THREE.Raycaster();
+const pointerNDC = new THREE.Vector2();
+let orbitDragging = false;   // OrbitControls のドラッグ(回転)中は追従を止める
+
+// OrbitControls のドラッグ開始/終了でフラグ管理(ホバー追従と回転を両立)
+controls.addEventListener('start', () => { orbitDragging = true; });
+controls.addEventListener('end', () => { orbitDragging = false; });
+
+function updateCursorFromPointer(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  pointerNDC.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+  pointerNDC.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+  cursorRaycaster.setFromCamera(pointerNDC, camera);
+  const hit = cursorRaycaster.intersectObject(terrain, false);
+  if (hit.length > 0) cursorPos.copy(hit[0].point);
+}
+
+// PC(マウス):ホバーで追従。ただし回転ドラッグ中はスキップ。
+canvas.addEventListener('pointermove', (e) => {
+  if (viewMode !== 'observe') return;
+  if (e.pointerType === 'mouse' && orbitDragging) return;
+  updateCursorFromPointer(e.clientX, e.clientY);
+});
+// タッチ:指を置いた/動かした場所にリングを出す(適用はボタンなので回転と競合しない)。
+canvas.addEventListener('pointerdown', (e) => {
+  if (viewMode !== 'observe') return;
+  if (e.pointerType === 'touch') updateCursorFromPointer(e.clientX, e.clientY);
+});
+
 // ジオラマの側面(スカート)と台座
 function buildSkirt() {
   const depth = -2.6;
@@ -573,7 +624,9 @@ const reed = new Float32Array(NCELL);
 const flower = new Float32Array(NCELL);
 const shrub = new Float32Array(NCELL);
 const tree = new Float32Array(NCELL);
-const vine = new Float32Array(NCELL);   // 侵略的外来種:アレチウリ
+const vine = new Float32Array(NCELL);     // 侵略的外来種:アレチウリの地上部(繁茂量 biomass)
+const vineSeed = new Float32Array(NCELL); // アレチウリの土壌中の種子バンク(seedBank)
+const vineCover = new Float32Array(NCELL);// その日に在来植物を覆っていた被度(描画用)
 const stability = new Float32Array(NCELL);
 const biome = new Uint8Array(NCELL);
 const isWater = new Uint8Array(NCELL);
@@ -603,6 +656,8 @@ for (let i = 0; i < NCELL; i++) {
 
 let simDays = 0;
 let paused = false;
+let timeScale = 1;          // 時間の速さ(日数の進みだけを速める)
+const TIME_SCALES = [1, 2, 4];
 let rainBoost = 0;
 let rainTimer = 0;
 let protectionTimer = 0;   // 保護活動の残り日数
@@ -610,7 +665,8 @@ let vegSeedRng = mulberry32(777);
 
 function seedInitialVegetation() {
   grass.fill(0); reed.fill(0); flower.fill(0); shrub.fill(0); tree.fill(0);
-  vine.fill(0); stability.fill(0); germPulse.fill(0);
+  vine.fill(0); vineSeed.fill(0); vineCover.fill(0);
+  stability.fill(0); germPulse.fill(0);
   for (let i = 0; i < NCELL; i++) {
     moisture[i] = baseMoist[i];
     nutrients[i] = 0.35 + vegSeedRng() * 0.3;
@@ -671,31 +727,59 @@ function nearRareCell(i, radius) {
   return false;
 }
 
-// ---------------- アレチウリの自動侵入 ----------------
-// ボタンではなく、時間経過の中で外から種子が入り込む偶発イベント。
-// 川沿い・裸地・草地の縁など、植生の弱い場所に入りやすい。雨のあとは少し入りやすい。
+// ---------------- アレチウリ(一年草のつる植物)のモデル ----------------
+// 個体数だけでなく、季節に沿った生活史(stage)と土壌の種子バンク(vineSeed)を持つ。
+//   春   : 種子バンクから発芽。小さく、被害は弱い。駆除がとても効く
+//   初夏 : つるが伸び始める。まだ駆除が効く
+//   夏   : 成長が速く、周囲の在来植物に絡みついて覆う(繁茂)
+//   晩夏〜秋 : 大繁茂し、開花・結実して種子バンクを大きく増やす
+//   冬   : 地上部は枯れる。ただし種子バンクは残る
+//   翌春 : 残った種子バンクから再び発芽し、発生地点が増える
+//
+// === デバッグ用の調整定数 ===
+// 侵入や発芽が遅すぎて確認できないと困るので、発生確率はここで調整できる。
+const VINE_INVASION_START_DAY = 45;  // この日数を過ぎると外部からの侵入が始まる
+const VINE_INVASION_RATE = 0.016;    // 1日あたりの新規侵入確率(雨後は上がる)。大きいほど侵入が早い
+const VINE_SPRING_GERM_RATE = 0.05;  // 春の1日あたり発芽係数(種子バンク量に比例)。大きいほど翌年の再発生が多い
+const VINE_SEED_PRODUCTION = 0.05;   // 結実期に繁茂量から種子バンクへ変換される量。大きいほど翌年リスクが増える
 
-const INVASION_START_DAY = 60;
+// 当日の生活史フェーズ(年内の経過日 doy から決める)
+const vinePh = { stage: 'seedling', cap: 0.28, grow: 0.02, spread: 0, seedProd: 0, dieback: 0 };
+const VINE_STAGE_JP = {
+  seedling: '芽生え', growing: '伸長', spreading: '繁茂', fruiting: '結実', dead: '枯死',
+};
 
+function updateVinePhenology(days) {
+  const doy = ((days % YEAR_DAYS) + YEAR_DAYS) % YEAR_DAYS;
+  let s;
+  if (doy < 14)      s = { stage: 'seedling',  cap: 0.28, grow: 0.020, spread: 0.0, seedProd: 0, dieback: 0 };
+  else if (doy < 30) s = { stage: 'growing',   cap: 0.52, grow: 0.045, spread: 0.5, seedProd: 0, dieback: 0 };
+  else if (doy < 62) s = { stage: 'spreading', cap: 1.00, grow: 0.075, spread: 1.0, seedProd: 0, dieback: 0 };
+  else if (doy < 90) s = { stage: 'fruiting',  cap: 1.00, grow: 0.030, spread: 0.5, seedProd: 1, dieback: 0 };
+  else               s = { stage: 'dead',      cap: 0.00, grow: 0.000, spread: 0.0, seedProd: 0, dieback: 1 };
+  Object.assign(vinePh, s);
+}
+
+// 外部からの偶発的な種子の侵入(川沿い・裸地・草地の縁・植生の弱い場所に入りやすい)
 function tryVineInvasion() {
-  if (simDays < INVASION_START_DAY) return;
-  let vineSum = 0;
-  for (let i = 0; i < NCELL; i++) vineSum += vine[i];
-  if (vineSum > 130) return; // すでに大繁茂しているときは新たな侵入は数えない
-  const p = 0.01 + (rainBoost > 0.12 ? 0.008 : 0);
+  if (simDays < VINE_INVASION_START_DAY) return;
+  if (vinePh.stage === 'dead') return; // 冬は新たな地上部は出ない
+  const p = VINE_INVASION_RATE * (rainBoost > 0.12 ? 1.6 : 1) * clamp(seasonNow.growth, 0.2, 1.3);
   if (tickRng() >= p) return;
   for (let tryN = 0; tryN < 120; tryN++) {
     const i = Math.floor(tickRng() * NCELL);
     if (isWater[i] || vine[i] > 0) continue;
     if (tree[i] > 0.3) continue;                       // 林の中には入りにくい
     const nearRiver = cellRiverD[i] < 10;
+    const moist = moisture[i] > 0.4;                   // 湿り気のある場所を好む
     const weakVeg = grass[i] + reed[i] < 0.45;         // 植生の弱い場所
     const openCell = biome[i] === BIOME.BARE || biome[i] === BIOME.GRASS
       || (nearRiver && reed[i] < 0.4);                 // 川沿いの開けた場所
-    if ((nearRiver && openCell) || (weakVeg && openCell && tickRng() < 0.5)) {
-      vine[i] = 0.18;
+    if (((nearRiver || moist) && openCell) || (weakVeg && openCell && tickRng() < 0.5)) {
+      vine[i] = 0.16;
+      vineSeed[i] = Math.max(vineSeed[i], 0.3);
       const j = neighborIdx(i, tickRng() < 0.5 ? 1 : -1, 0);
-      if (j >= 0 && !isWater[j]) vine[j] = Math.max(vine[j], 0.08);
+      if (j >= 0 && !isWater[j]) vine[j] = Math.max(vine[j], 0.07);
       toast('アレチウリが入り込んだようです…(早めの駆除が有効です)');
       return;
     }
@@ -709,6 +793,7 @@ function simTick() {
   rainBoost *= 0.965;
   if (protectionTimer > 0) protectionTimer -= 1;
   updateSeason(simDays);
+  updateVinePhenology(simDays);
   const gF = seasonNow.growth;
 
   tryVineInvasion();
@@ -724,27 +809,52 @@ function simTick() {
     // 栄養はゆっくり回復
     nutrients[i] = clamp(nutrients[i] + 0.0025, 0, 1.2);
 
-    // --- アレチウリ(成長・拡散・被陰) ---
-    const vGrow = clamp(gF * 1.15, 0.05, 1.3); // 暖かい季節に旺盛、冬は休眠ぎみ
+    // --- アレチウリ:生活史(発芽→伸長→繁茂→結実→枯死)と種子バンク ---
     const vSuit = bell(m, 0.5, 0.4) * (1 - clamp(tree[i] * 0.6, 0, 0.6));
     const vNb = neighborAvg(vine, i);
-    if (vine[i] > 0 || vNb > 0.02) {
-      let dv = vSuit * vGrow * (0.045 * vNb + 0.028 * vine[i]);
-      dv *= (1 - reed[i] * 0.3); // 密なヨシ原はやや入りにくい
+    const vSeedNb = neighborAvg(vineSeed, i);
+
+    // 春:前年の種子バンクから発芽(バンクが多い場所ほど発芽が多い)
+    if (vinePh.stage === 'seedling' && vine[i] < 0.05 && vineSeed[i] > 0.12) {
+      const germP = VINE_SPRING_GERM_RATE * vineSeed[i] * (rainBoost > 0.1 ? 1.4 : 1);
+      if (tickRng() < germP) {
+        vine[i] = 0.05 + tickRng() * 0.05;
+        vineSeed[i] *= 0.7; // 発芽に使われた分だけ種子バンクが減る
+      }
+    }
+
+    if (vinePh.stage === 'dead') {
+      // 冬:地上部は枯れて消える(種子バンクは土に残る)
+      vine[i] *= 0.88;
+      if (vine[i] < 0.02) vine[i] = 0;
+    } else if (vine[i] > 0 || (vNb > 0.02 && vinePh.spread > 0)) {
+      // 自分の成長 + 隣からのつるの伸長(spread はフェーズで変わる)
+      let dv = vSuit * (vinePh.grow * (0.4 + 0.6 * vine[i])
+        + vinePh.spread * (0.05 * vNb + 0.02 * vSeedNb));
+      dv *= (1 - reed[i] * 0.3);                  // 密なヨシ原はやや入りにくい
       if (protectionTimer > 0) {
-        dv *= nearRareCell(i, 6) ? 0.15 : 0.8; // 保護中は希少種の周りで特に抑える
+        dv *= nearRareCell(i, 6) ? 0.12 : 0.7;    // 保護中は希少種の周りで特に抑える
       }
       vine[i] = clamp(vine[i] + dv, 0, 1);
-      if (gF < 0.25) vine[i] *= 0.995; // 冬はわずかに後退する
+      // 段階ごとの上限(春・初夏は小さいまま)
+      if (vine[i] > vinePh.cap) vine[i] = lerp(vine[i], vinePh.cap, 0.15);
     }
+
+    // 結実期:十分に茂った株が種子バンクを増やす
+    if (vinePh.seedProd > 0 && vine[i] > 0.3) {
+      vineSeed[i] = Math.min(1.6, vineSeed[i] + vine[i] * VINE_SEED_PRODUCTION);
+    }
+    vineSeed[i] *= 0.992; // 種子の寿命(結実を許さなければ年々失活。約1年で6割ほどに減る)
+
     const cover = clamp(vine[i] * 1.25, 0, 1); // つるに覆われた分だけ在来植物が弱る
+    vineCover[i] = cover;
 
     // --- 草 ---
     const gSuit = bell(m, 0.45, 0.3);
     const gNb = neighborAvg(grass, i);
     const shade = clamp(tree[i] * 0.75 + shrub[i] * 0.4 + reed[i] * 0.5, 0, 0.9);
     let dg = gSuit * (0.010 + 0.085 * gNb + 0.045 * grass[i]) * (0.45 + 0.55 * nutrients[i]) * gF;
-    dg *= (1 - shade);
+    dg *= (1 - shade) * (1 - cover * 0.85); // つるに覆われると光不足で成長が止まる
     if (protectionTimer > 0 && nearRareCell(i, 5)) dg *= 1.3; // 保護中は回復を助ける
     let gDeath = grass[i] * 0.012 + grass[i] * 0.055 * cover;
     if (m < 0.17) gDeath += grass[i] * 0.05;
@@ -755,7 +865,7 @@ function simTick() {
     const rSuit = bell(m, 0.8, 0.22) * (cellRiverD[i] < 16 ? 1 : 0.25);
     const rNb = neighborAvg(reed, i);
     let dr = rSuit * (0.008 + 0.10 * rNb + 0.045 * reed[i]) * (0.5 + 0.5 * nutrients[i]) * gF;
-    dr *= (1 - clamp(tree[i], 0, 0.8));
+    dr *= (1 - clamp(tree[i], 0, 0.8)) * (1 - cover * 0.8);
     let rDeath = reed[i] * 0.01 + reed[i] * 0.045 * cover + (m < 0.45 ? reed[i] * 0.045 : 0);
     reed[i] = clamp(reed[i] + dr - rDeath, 0, 1);
     nutrients[i] = clamp(nutrients[i] + rDeath * 0.35 - dr * 0.05, 0, 1.2);
@@ -833,19 +943,25 @@ const metrics = {
   edges: 0, speciesCount: 0, biomeCount: 0,
   grassSum: 0, reedSum: 0, flowerSum: 0, shrubCount: 0, treeCount: 0,
   vineSum: 0, vineCells: 0, invasion: 0,
+  vineSeedSum: 0, seedBankLevel: '少', nextYearRisk: '低', removalDifficulty: '低',
+  vineStage: '—',
   rareCount: 0, rareRisk: '—',
   vegRatio: 0,
 };
 
+const threeLevel = (x, midT, hiT, labels) => (x >= hiT ? labels[2] : x >= midT ? labels[1] : labels[0]);
+
 function computeMetrics() {
   let gSum = 0, rSum = 0, fSum = 0, sCount = 0, tCount = 0;
-  let vSum = 0, vCells = 0;
+  let vSum = 0, vCells = 0, vSeedSum = 0, vMaxBio = 0;
   let edges = 0, waterEdges = 0, vegCells = 0;
   const biomesPresent = new Set();
 
   for (let i = 0; i < NCELL; i++) {
     gSum += grass[i]; rSum += reed[i]; fSum += flower[i];
     vSum += vine[i];
+    vSeedSum += vineSeed[i];
+    if (vine[i] > vMaxBio) vMaxBio = vine[i];
     if (vine[i] > 0.12) vCells++;
     if (shrub[i] > 0.25) sCount++;
     if (tree[i] > 0.2) tCount++;
@@ -880,7 +996,18 @@ function computeMetrics() {
   metrics.grassSum = gSum; metrics.reedSum = rSum; metrics.flowerSum = fSum;
   metrics.shrubCount = sCount; metrics.treeCount = tCount;
   metrics.vineSum = vSum; metrics.vineCells = vCells;
-  metrics.invasion = Math.min(100, Math.round(vSum / 10));
+  metrics.invasion = Math.min(100, vSum > 0.05 ? Math.max(1, Math.round(vSum / 10)) : 0);
+  metrics.vineSeedSum = vSeedSum;
+  metrics.vineStage = (vSum > 0.5 || (vSeedSum > 1 && vinePh.stage !== 'dead'))
+    ? VINE_STAGE_JP[vinePh.stage] : '—';
+  // 種子バンク量(少/中/多)
+  metrics.seedBankLevel = threeLevel(vSeedSum, 4, 16, ['少', '中', '多']);
+  // 翌年リスク = 種子バンク + 結実中の繁茂量(秋ほど高くなる)
+  const nyr = vSeedSum + (vinePh.seedProd > 0 ? vSum * 0.15 : 0);
+  metrics.nextYearRisk = threeLevel(nyr, 4, 14, ['低', '中', '高']);
+  // 駆除難度 = 総量 × 株あたりの大きさ(大繁茂・結実後ほど高い)
+  const diffScore = vSum / 12 + vMaxBio * 2 + (vinePh.seedProd > 0 ? 1.5 : 0);
+  metrics.removalDifficulty = threeLevel(diffScore, 1.5, 4, ['低', '中', '高']);
   metrics.edges = edges;
   metrics.speciesCount = species;
   metrics.biomeCount = biomesPresent.size;
@@ -1193,12 +1320,32 @@ function rebuildAllVegetation() {
   metrics.plants = total;
 }
 
+// アレチウリの生活史ごとの色(在来植物より少し明るく青みのある緑。冬は茶色く枯れる)
+const VINE_STAGE_COLOR = {
+  seedling: new THREE.Color('#aecb7a'),
+  growing: new THREE.Color('#a3c06f'),
+  spreading: new THREE.Color('#94ad68'),
+  fruiting: new THREE.Color('#aeb986'),
+  dead: new THREE.Color('#a48d60'),
+};
+const VINE_GROUND_COLOR = {
+  seedling: new THREE.Color('#8f9a6a'),
+  growing: new THREE.Color('#878f64'),
+  spreading: new THREE.Color('#7c855c'),
+  fruiting: new THREE.Color('#8b8a64'),
+  dead: new THREE.Color('#8d7d57'),
+};
+const vineGround = new THREE.Color('#878d6e');
+
 // 季節による植物の色味(material.color はインスタンス色と掛け合わされる)
 function applySeasonTints() {
   for (const key of Object.keys(SPECIES)) {
     const sp = SPECIES[key];
     if (sp.seasonTint) sp.mat.color.copy(seasonNow[sp.seasonTint]);
   }
+  // アレチウリは生活史ステージで色を変える
+  SPECIES.vine.mat.color.copy(VINE_STAGE_COLOR[vinePh.stage]);
+  vineGround.copy(VINE_GROUND_COLOR[vinePh.stage]);
 }
 
 // ---------------- 地形の色 ----------------
@@ -1206,7 +1353,6 @@ function applySeasonTints() {
 const C_SOIL_DRY = new THREE.Color('#b3a173');
 const C_SOIL_WET = new THREE.Color('#74604a');
 const C_SAND = new THREE.Color('#c7b289');
-const C_VINE = new THREE.Color('#878d6e');
 const C_BED = new THREE.Color('#5c5448');
 const tmpColor = new THREE.Color();
 const tmpColor2 = new THREE.Color();
@@ -1249,7 +1395,7 @@ function recolorTerrain() {
       tmpColor.lerp(seasonNow.terrWet, wet * 0.7);
       tmpColor.lerp(seasonNow.terrForest, clamp(t * 1.1, 0, 1) * 0.75);
       // アレチウリに覆われた場所はくすんだ色に
-      tmpColor.lerp(C_VINE, clamp(v * 1.15, 0, 1) * 0.8);
+      tmpColor.lerp(vineGround, clamp(v * 1.15, 0, 1) * 0.8);
       const hl = clamp((y - 0.4) / 3.2, 0, 1);
       tmpColor2.setRGB(1, 0.99, 0.94);
       tmpColor.lerp(tmpColor2, hl * 0.1);
@@ -1878,6 +2024,9 @@ const valInsects = el('val-insects');
 const valBirds = el('val-birds');
 const valFish = el('val-fish');
 const valVine = el('val-vine');
+const valSeedbank = el('val-seedbank');
+const valNextrisk = el('val-nextrisk');
+const valRemoval = el('val-removal');
 const valRare = el('val-rare');
 const meterDiversity = el('meter-diversity');
 const toastEl = el('toast');
@@ -1901,7 +2050,14 @@ function updateStatsUI() {
   valInsects.textContent = metrics.insects;
   valBirds.textContent = metrics.birds;
   valFish.textContent = metrics.fish;
-  valVine.textContent = `${metrics.invasion}%`;
+  // 外来種:侵略度% と現在の生活史ステージ
+  valVine.textContent = metrics.vineStage === '—'
+    ? `${metrics.invasion}%`
+    : `${metrics.invasion}% ${metrics.vineStage}`;
+  const lvlClass = (lvl) => RISK_CLASS[lvl] || (lvl === '多' ? 'high' : lvl === '中' ? 'mid' : 'low');
+  valSeedbank.innerHTML = `<span class="lvl ${lvlClass(metrics.seedBankLevel)}">${metrics.seedBankLevel}</span>`;
+  valNextrisk.innerHTML = `<span class="lvl ${lvlClass(metrics.nextYearRisk)}">${metrics.nextYearRisk}</span>`;
+  valRemoval.innerHTML = `<span class="lvl ${lvlClass(metrics.removalDifficulty)}">${metrics.removalDifficulty}</span>`;
   if (metrics.rareCount === 0) {
     valRare.textContent = metrics.rareRisk === '—' ? '—' : '0';
   } else {
@@ -1924,6 +2080,15 @@ el('btn-pause').addEventListener('click', () => {
   toast(paused ? '時間を止めました' : '時間が流れはじめました');
 });
 
+el('btn-speed').addEventListener('click', () => {
+  const next = TIME_SCALES[(TIME_SCALES.indexOf(timeScale) + 1) % TIME_SCALES.length];
+  timeScale = next;
+  const btn = el('btn-speed');
+  btn.querySelector('.label').textContent = `×${next}`;
+  btn.classList.toggle('active', next !== 1);
+  toast(`時間の速さ:×${next}`);
+});
+
 el('btn-rain').addEventListener('click', () => {
   rainBoost = clamp(rainBoost + 0.38, 0, 0.65);
   rainTimer = 9;
@@ -1942,48 +2107,86 @@ el('btn-flood').addEventListener('click', () => {
 });
 
 el('btn-plant').addEventListener('click', () => {
-  let placed = 0, guard = 0;
-  while (placed < 14 && guard++ < 3000) {
-    const i = Math.floor(insectRng() * NCELL);
+  const r2 = CURSOR_RADIUS * CURSOR_RADIUS; // カーソル範囲(水平距離の二乗で判定)
+  // まずカーソル範囲内の適地セルを集める(陸で条件を満たすセルのみ)
+  const candidates = [];
+  for (let i = 0; i < NCELL; i++) {
     if (isWater[i]) continue;
+    const [cxw, czw] = cellCenter(i);
+    const dx = cxw - cursorPos.x, dz = czw - cursorPos.z;
+    if (dx * dx + dz * dz > r2) continue;
+    if (moisture[i] > 0.24) candidates.push(i);
+  }
+  if (candidates.length === 0) {
+    toast('この範囲には植えられる場所がありません');
+    return;
+  }
+  // 適地に植える。1回で植える数は範囲内適地に応じた適量(最大12)。
+  const target = Math.min(12, candidates.length);
+  let placed = 0, guard = 0;
+  while (placed < target && guard++ < 3000) {
+    const i = candidates[Math.floor(insectRng() * candidates.length)];
     const m = moisture[i];
     if (m > 0.58 && cellRiverD[i] < 14) {
       reed[i] = Math.max(reed[i], 0.3 + insectRng() * 0.2);
-      placed++;
-    } else if (m > 0.24) {
+    } else {
       grass[i] = Math.max(grass[i], 0.3 + insectRng() * 0.25);
       if (insectRng() < 0.3) flower[i] = Math.max(flower[i], 0.2);
-      placed++;
     }
+    placed++;
   }
   rebuildAllVegetation();
   updateStatsUI();
-  toast('種をまきました');
+  toast('カーソル範囲に種をまきました');
 });
 
-// --- 駆除:アレチウリを刈り取る。早い段階ほどよく効く ---
+// --- 駆除:アレチウリを刈り取る。成長段階で効果が変わる ---
+// 芽生え・伸長:ほぼ根絶でき、種子バンクも減らせる
+// 繁茂:一部だけ除去。大株ほど取り残しが多い(駆除難度)
+// 結実後・枯死:地上部は減るが種子バンクは土に残り、翌年に発芽する
 el('btn-cull').addEventListener('click', () => {
-  let n = 0;
+  const stage = vinePh.stage;
+  const r2 = CURSOR_RADIUS * CURSOR_RADIUS; // カーソル範囲(水平距離の二乗で判定)
+  let n = 0, seedLeft = false;
   for (let i = 0; i < NCELL; i++) {
-    if (vine[i] <= 0.01) continue;
-    n++;
-    if (nearRareCell(i, 7)) {
-      vine[i] = 0;                  // 希少種の周りは優先して完全除去
-    } else if (vine[i] < 0.45) {
-      vine[i] *= 0.04;              // 小さいパッチはほぼ根絶できる
+    // カーソル範囲内のセルだけを対象にする(セル中心と cursorPos の水平距離)
+    const [cxw, czw] = cellCenter(i);
+    const dx = cxw - cursorPos.x, dz = czw - cursorPos.z;
+    if (dx * dx + dz * dz > r2) continue;
+    if (vine[i] <= 0.01 && vineSeed[i] <= 0.05) continue;
+    if (vine[i] > 0.01) n++;
+    const near = nearRareCell(i, 7); // 希少種の周りは優先的に手をかける
+    if (stage === 'seedling' || stage === 'growing') {
+      vine[i] = 0;
+      vineSeed[i] *= near ? 0.12 : 0.35;   // 早期は種子バンクも大きく減らせる
+    } else if (stage === 'spreading') {
+      // 大株ほど取り残す(駆除難度)。希少種周りは手厚く
+      const leave = near ? 0.12 : clamp(0.25 + vine[i] * 0.35, 0.2, 0.6);
+      vine[i] *= leave;
+      vineSeed[i] *= near ? 0.5 : 0.75;
     } else {
-      vine[i] *= 0.45;              // 大繁茂した場所は刈っても根が残る
+      // 結実後・枯死:地上部は減り、立ち枯れごと取り除くと種子も多少持ち去れる
+      // (ただし早期ほどは減らせず、土に残った種は翌年に発芽する)
+      vine[i] *= near ? 0.2 : 0.5;
+      vineSeed[i] *= near ? 0.6 : 0.8;
+      if (vineSeed[i] > 0.3) seedLeft = true;
     }
   }
-  if (n === 0) {
-    toast('アレチウリは見当たりません');
+  if (n === 0 && !seedLeft) {
+    toast('この範囲にアレチウリはありません');
     return;
   }
   computeMetrics();
   rebuildAllVegetation();
   recolorTerrain();
   updateStatsUI();
-  toast(`アレチウリを駆除しました(${n}か所)`);
+  if (seedLeft) {
+    toast('地上部は刈れましたが、土の中に種子が残っています(翌年に注意)');
+  } else if (stage === 'seedling' || stage === 'growing') {
+    toast(`早期駆除に成功(カーソル範囲・${n}か所・種子バンクも抑制)`);
+  } else {
+    toast(`アレチウリを駆除しました(カーソル範囲・${n}か所・大株は取り残しあり)`);
+  }
 });
 
 // --- 保護:希少種が生き残れる環境をしばらく見守る ---
@@ -2124,6 +2327,7 @@ el('btn-reset').addEventListener('click', () => {
   seedInitialVegetation();
   for (let i = 0; i < NCELL; i++) biome[i] = isWater[i] ? BIOME.WATER : BIOME.BARE;
   updateSeason(0);
+  updateVinePhenology(0);
   if (viewMode !== 'observe') setViewMode('observe', true);
   computeMetrics();
   updateInsectPopulation();
@@ -2152,9 +2356,9 @@ function frame() {
   const dt = Math.min(now - lastTime, 0.1);
   lastTime = now;
 
-  // シミュレーション
+  // シミュレーション(timeScale で日数の進みだけを速める)
   if (!paused) {
-    tickAccum += dt;
+    tickAccum += dt * timeScale;
     while (tickAccum >= TICK_SEC) {
       tickAccum -= TICK_SEC;
       simTick();
@@ -2222,6 +2426,19 @@ function frame() {
     if (c.position.x > 55) c.position.x = -55;
   }
 
+  // 円状カーソル:観察モードのときだけ表示し、cursorPos へなめらかに追従。
+  // 視点モード(鳥/魚/虫)中は隠す。
+  if (viewMode === 'observe') {
+    cursorRing.visible = true;
+    cursorRing.position.x = lerp(cursorRing.position.x, cursorPos.x, 0.25);
+    cursorRing.position.z = lerp(cursorRing.position.z, cursorPos.z, 0.25);
+    cursorRing.position.y = lerp(cursorRing.position.y, cursorPos.y + 0.05, 0.25);
+    // ごく弱い脈動(透明度)。派手にしない。
+    cursorMat.opacity = 0.42 + Math.sin(now * 2.2) * 0.08;
+  } else {
+    cursorRing.visible = false;
+  }
+
   // カメラ
   if (viewMode !== 'observe') {
     updateCreatureCamera(dt);
@@ -2249,6 +2466,7 @@ window.addEventListener('resize', () => {
 });
 
 updateSeason(0);
+updateVinePhenology(0);
 simTick();
 computeMetrics();
 updateInsectPopulation();

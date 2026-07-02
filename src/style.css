@@ -74,9 +74,10 @@ html, body {
 }
 
 .stat-value .risk { font-size: 10px; font-weight: 600; margin-left: 2px; }
-.risk.low { color: #5d8a4a; }
-.risk.mid { color: #b08a3a; }
-.risk.high { color: #b05545; }
+.risk.low, .lvl.low { color: #5d8a4a; }
+.risk.mid, .lvl.mid { color: #b08a3a; }
+.risk.high, .lvl.high { color: #b05545; }
+.stat-value .lvl { font-weight: 700; }
 
 .meter {
   width: 50px;
