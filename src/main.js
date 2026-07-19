@@ -328,6 +328,7 @@ scene.add(cursorRing);
 const cursorPos = new THREE.Vector3(0, terrainHeight(0, 0), 0);
 cursorRing.position.copy(cursorPos);
 cursorRing.position.y += 0.05;
+let cursorSelected = false;
 
 // レイキャスト(canvas ポインタ → NDC → terrain との交点)
 const cursorRaycaster = new THREE.Raycaster();
@@ -344,19 +345,46 @@ function updateCursorFromPointer(clientX, clientY) {
   pointerNDC.y = -((clientY - rect.top) / rect.height) * 2 + 1;
   cursorRaycaster.setFromCamera(pointerNDC, camera);
   const hit = cursorRaycaster.intersectObject(terrain, false);
-  if (hit.length > 0) cursorPos.copy(hit[0].point);
+  if (hit.length > 0) {
+    cursorPos.copy(hit[0].point);
+    return true;
+  }
+  return false;
 }
 
 // PC(マウス):ホバーで追従。ただし回転ドラッグ中はスキップ。
-canvas.addEventListener('pointermove', (e) => {
-  if (viewMode !== 'observe') return;
-  if (e.pointerType === 'mouse' && orbitDragging) return;
-  updateCursorFromPointer(e.clientX, e.clientY);
-});
+let pointerDownPos = null;
+const activePointers = new Set();
+let multiTouchGesture = false;
 // タッチ:指を置いた/動かした場所にリングを出す(適用はボタンなので回転と競合しない)。
 canvas.addEventListener('pointerdown', (e) => {
   if (viewMode !== 'observe') return;
-  if (e.pointerType === 'touch') updateCursorFromPointer(e.clientX, e.clientY);
+  activePointers.add(e.pointerId);
+  if (activePointers.size > 1) multiTouchGesture = true;
+  pointerDownPos = { x: e.clientX, y: e.clientY };
+});
+canvas.addEventListener('pointerup', (e) => {
+  activePointers.delete(e.pointerId);
+  if (viewMode !== 'observe' || !pointerDownPos) {
+    if (activePointers.size === 0) multiTouchGesture = false;
+    return;
+  }
+  const moved = Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y);
+  pointerDownPos = null;
+  if (multiTouchGesture || moved > 10) {
+    if (activePointers.size === 0) multiTouchGesture = false;
+    return;
+  }
+  if (updateCursorFromPointer(e.clientX, e.clientY)) {
+    cursorSelected = true;
+    updateSelectionUI();
+  }
+  if (activePointers.size === 0) multiTouchGesture = false;
+});
+canvas.addEventListener('pointercancel', (e) => {
+  activePointers.delete(e.pointerId);
+  pointerDownPos = null;
+  if (activePointers.size === 0) multiTouchGesture = false;
 });
 
 // ジオラマの側面(スカート)と台座
@@ -2041,6 +2069,37 @@ function toast(msg) {
 
 const RISK_CLASS = { '低': 'low', '中': 'mid', '高': 'high' };
 
+function updateSelectionUI() {
+  const title = el('selection-title');
+  const detail = el('selection-detail');
+  const cullBtn = el('btn-cull');
+  const plantBtn = el('btn-plant');
+  if (!cursorSelected) {
+    title.textContent = '手入れする場所を選択';
+    detail.textContent = '地面をクリック／タップしてください';
+    cullBtn.disabled = true;
+    plantBtn.disabled = true;
+    return;
+  }
+  const r2 = CURSOR_RADIUS * CURSOR_RADIUS;
+  let visibleVines = 0;
+  let seedCells = 0;
+  for (let i = 0; i < NCELL; i++) {
+    const [x, z] = cellCenter(i);
+    const dx = x - cursorPos.x;
+    const dz = z - cursorPos.z;
+    if (dx * dx + dz * dz > r2) continue;
+    if (vine[i] > 0.01) visibleVines++;
+    if (vineSeed[i] > 0.05) seedCells++;
+  }
+  title.textContent = visibleVines > 0 ? `外来種あり：${visibleVines}か所` : '外来種は見つかりません';
+  detail.textContent = seedCells > visibleVines
+    ? `選択範囲に土中の種子あり（${VINE_STAGE_JP[vinePh.stage]}）`
+    : `選択範囲を手入れできます（${VINE_STAGE_JP[vinePh.stage]}）`;
+  cullBtn.disabled = visibleVines === 0;
+  plantBtn.disabled = false;
+}
+
 function updateStatsUI() {
   valSeason.textContent = seasonNow.name;
   valTime.textContent = `${Math.floor(simDays)}日`;
@@ -2069,6 +2128,7 @@ function updateStatsUI() {
   const pBtn = el('btn-protect');
   pBtn.classList.toggle('active', protectionTimer > 0);
   pBtn.querySelector('.label').textContent = protectionTimer > 0 ? '保護中' : '保護';
+  updateSelectionUI();
 }
 
 el('btn-pause').addEventListener('click', () => {
@@ -2107,6 +2167,7 @@ el('btn-flood').addEventListener('click', () => {
 });
 
 el('btn-plant').addEventListener('click', () => {
+  if (!cursorSelected) return;
   const r2 = CURSOR_RADIUS * CURSOR_RADIUS; // カーソル範囲(水平距離の二乗で判定)
   // まずカーソル範囲内の適地セルを集める(陸で条件を満たすセルのみ)
   const candidates = [];
@@ -2145,6 +2206,7 @@ el('btn-plant').addEventListener('click', () => {
 // 繁茂:一部だけ除去。大株ほど取り残しが多い(駆除難度)
 // 結実後・枯死:地上部は減るが種子バンクは土に残り、翌年に発芽する
 el('btn-cull').addEventListener('click', () => {
+  if (!cursorSelected) return;
   const stage = vinePh.stage;
   const r2 = CURSOR_RADIUS * CURSOR_RADIUS; // カーソル範囲(水平距離の二乗で判定)
   let n = 0, seedLeft = false;
@@ -2429,7 +2491,7 @@ function frame() {
   // 円状カーソル:観察モードのときだけ表示し、cursorPos へなめらかに追従。
   // 視点モード(鳥/魚/虫)中は隠す。
   if (viewMode === 'observe') {
-    cursorRing.visible = true;
+    cursorRing.visible = cursorSelected;
     cursorRing.position.x = lerp(cursorRing.position.x, cursorPos.x, 0.25);
     cursorRing.position.z = lerp(cursorRing.position.z, cursorPos.z, 0.25);
     cursorRing.position.y = lerp(cursorRing.position.y, cursorPos.y + 0.05, 0.25);

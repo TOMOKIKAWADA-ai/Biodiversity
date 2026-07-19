@@ -135,6 +135,8 @@ html, body {
 #controls button:hover { background: rgba(60, 80, 55, 0.12); }
 #controls button:active { transform: scale(0.94); }
 #controls button.active { background: rgba(93, 138, 74, 0.22); }
+#controls button:disabled,
+#selection-panel button:disabled { opacity: 0.42; cursor: default; transform: none; }
 
 #controls .icon { font-size: 16px; line-height: 1.15; }
 #controls .label { font-size: 10px; color: var(--text-dim); }
@@ -166,8 +168,51 @@ html, body {
 
 #toast.show { opacity: 1; }
 
+#selection-panel {
+  position: absolute;
+  bottom: 90px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(430px, calc(100% - 24px));
+  padding: 9px 10px 9px 14px;
+  box-sizing: border-box;
+  background: rgba(250, 252, 248, 0.92);
+  border: 1px solid var(--panel-border);
+  border-radius: 15px;
+  box-shadow: 0 2px 14px rgba(40, 60, 40, 0.1);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+.selection-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
+.selection-copy strong { font-size: 12px; font-weight: 650; }
+.selection-copy span { overflow: hidden; color: var(--text-dim); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+#selection-panel .primary-action {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 12px;
+  border: 1px solid rgba(69, 111, 60, 0.25);
+  border-radius: 11px;
+  background: #4f7d45;
+  color: white;
+  font-family: inherit;
+  cursor: pointer;
+}
+#selection-panel .primary-action:not(:disabled):hover { background: #416d39; }
+#selection-panel .primary-action .label { font-size: 11px; font-weight: 650; }
+
+@media (pointer: coarse) {
+  #controls button { min-height: 48px; min-width: 52px; }
+  #selection-panel .primary-action { min-height: 48px; padding-inline: 14px; }
+}
+
 /* ---- モバイル ---- */
 @media (max-width: 640px) {
+  #selection-panel { bottom: calc(122px + env(safe-area-inset-bottom)); }
   #stats-panel {
     gap: 2px 9px;
     padding: 5px 10px;
@@ -178,9 +223,35 @@ html, body {
   .stat-value { font-size: 12px; }
   .meter { width: 38px; }
 
-  #controls { gap: 4px; padding: 5px; }
-  #controls button { min-width: 44px; padding: 5px 5px; }
+  #controls {
+    bottom: max(8px, env(safe-area-inset-bottom));
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
+    width: min(360px, calc(100% - 16px));
+    padding: 5px;
+  }
+  #controls button { min-width: 0; padding: 5px; }
   #controls .icon { font-size: 14px; }
   #controls .label { font-size: 9px; }
-  #toast { bottom: 104px; font-size: 11px; }
+  #toast { bottom: calc(190px + env(safe-area-inset-bottom)); font-size: 11px; }
+}
+
+/* タブレット縦向き：2段になる操作列の上に選択パネルを置く */
+@media (min-width: 641px) and (max-width: 900px) and (min-height: 521px) {
+  #selection-panel { bottom: calc(136px + env(safe-area-inset-bottom)); }
+  #toast { bottom: calc(204px + env(safe-area-inset-bottom)); }
+}
+
+/* スマホ横向き・高さの低いタブレット */
+@media (max-height: 520px) and (min-width: 641px) {
+  #stats-panel { top: 6px; gap: 2px 9px; padding: 4px 9px; }
+  .stat { min-width: 34px; }
+  .stat-label { font-size: 8px; }
+  .stat-value { font-size: 11px; }
+  .meter { width: 34px; }
+  #controls { bottom: max(6px, env(safe-area-inset-bottom)); gap: 3px; padding: 4px; }
+  #controls button { min-height: 44px; min-width: 48px; padding: 4px 5px; }
+  #selection-panel { bottom: calc(64px + env(safe-area-inset-bottom)); width: min(390px, calc(100% - 16px)); }
+  #toast { bottom: calc(126px + env(safe-area-inset-bottom)); }
 }

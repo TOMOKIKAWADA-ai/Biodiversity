@@ -68,13 +68,22 @@
 
     <div id="toast" aria-live="polite"></div>
 
+    <aside id="selection-panel" aria-live="polite">
+      <div class="selection-copy">
+        <strong id="selection-title">手入れする場所を選択</strong>
+        <span id="selection-detail">地面をクリック／タップしてください</span>
+      </div>
+      <button id="btn-cull" class="primary-action" disabled title="選んだ範囲のアレチウリを抜く">
+        <span class="icon">🌿</span><span class="label">外来種を抜く</span>
+      </button>
+    </aside>
+
     <nav id="controls" aria-label="操作">
       <button id="btn-pause" title="停止 / 再開"><span class="icon">⏸</span><span class="label">停止</span></button>
       <button id="btn-speed" title="時間の速さを変える"><span class="icon">⏩</span><span class="label">×1</span></button>
       <button id="btn-rain" title="雨を降らせる"><span class="icon">🌧</span><span class="label">雨</span></button>
       <button id="btn-flood" title="川を氾濫させる(自然の攪乱の再現)"><span class="icon">🌊</span><span class="label">氾濫</span></button>
       <button id="btn-plant" title="少し植物を植える"><span class="icon">🌱</span><span class="label">植える</span></button>
-      <button id="btn-cull" title="アレチウリを駆除する"><span class="icon">🧹</span><span class="label">駆除</span></button>
       <button id="btn-protect" title="希少種の周りの環境を保護する"><span class="icon">🛡</span><span class="label">保護</span></button>
       <button id="btn-view" title="視点を切り替える"><span class="icon">👁</span><span class="label">観察</span></button>
       <button id="btn-reset" title="リセット"><span class="icon">↺</span><span class="label">リセット</span></button>
